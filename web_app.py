@@ -13,7 +13,38 @@ from pydantic import BaseModel
 from monitor import run_monitor, get_default_dates
 from db import get_latest_scan, get_recent_scans
 
-app = FastAPI(title="Hua Hin Hotel Price & Busyness Monitor")
+import contextlib
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    async def periodic_refresher():
+        # Wait 10 seconds after server boot before checking
+        await asyncio.sleep(10)
+        while True:
+            try:
+                latest = get_latest_scan()
+                should_scan = False
+                if not latest:
+                    should_scan = True
+                else:
+                    try:
+                        created = datetime.strptime(str(latest["created_at"])[:19], "%Y-%m-%d %H:%M:%S")
+                        if (datetime.now() - created).total_seconds() > 6 * 3600:
+                            should_scan = True
+                    except Exception:
+                        pass
+                if should_scan:
+                    print("[Auto-Updater] Latest scan is older than 6 hours. Running background scan...")
+                    await run_monitor(target_mode="weekend", save_to_db=True)
+            except Exception as e:
+                print(f"[Auto-Updater Warning]: {e}")
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(periodic_refresher())
+    yield
+    task.cancel()
+
+app = FastAPI(title="Hua Hin Hotel Price & Busyness Monitor", lifespan=lifespan)
 
 class ScanRequest(BaseModel):
     target: Optional[str] = "weekend"
